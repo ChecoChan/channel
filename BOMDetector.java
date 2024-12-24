@@ -1,48 +1,54 @@
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.Scanner;
 
 public class BOMDetector {
 
+    /**
+     * Detects the encoding of a file based on its BOM (Byte Order Mark).
+     * @param file The file to check.
+     * @return The detected encoding, or "Unknown or no BOM detected" if no BOM is present.
+     * @throws IOException If an error occurs while reading the file.
+     */
     public static String detectFileEncoding(File file) throws IOException {
         try (FileInputStream fis = new FileInputStream(file)) {
-            // 读取前3个字节用于检查BOM
+            // Read the first 4 bytes of the file to check for BOM
             byte[] bom = new byte[4];
             int read = fis.read(bom);
 
             if (read >= 3) {
-                // 检查UTF-8 BOM (EF BB BF)
+                // Check for UTF-8 BOM (EF BB BF)
                 if ((bom[0] & 0xFF) == 0xEF && (bom[1] & 0xFF) == 0xBB && (bom[2] & 0xFF) == 0xBF) {
                     return "UTF-8";
                 }
             }
             if (read >= 2) {
-                // 检查UTF-16 LE BOM (FF FE)
+                // Check for UTF-16 LE BOM (FF FE)
                 if ((bom[0] & 0xFF) == 0xFF && (bom[1] & 0xFF) == 0xFE) {
                     return "UTF-16LE";
                 }
-                // 检查UTF-16 BE BOM (FE FF)
+                // Check for UTF-16 BE BOM (FE FF)
                 if ((bom[0] & 0xFF) == 0xFE && (bom[1] & 0xFF) == 0xFF) {
                     return "UTF-16BE";
                 }
             }
             if (read >= 4) {
-                // 检查UTF-32 LE BOM (FF FE 00 00)
+                // Check for UTF-32 LE BOM (FF FE 00 00)
                 if ((bom[0] & 0xFF) == 0xFF && (bom[1] & 0xFF) == 0xFE &&
                         (bom[2] & 0xFF) == 0x00 && (bom[3] & 0xFF) == 0x00) {
                     return "UTF-32LE";
                 }
-                // 检查UTF-32 BE BOM (00 00 FE FF)
+                // Check for UTF-32 BE BOM (00 00 FE FF)
                 if ((bom[0] & 0xFF) == 0x00 && (bom[1] & 0xFF) == 0x00 &&
                         (bom[2] & 0xFF) == 0xFE && (bom[3] & 0xFF) == 0xFF) {
                     return "UTF-32BE";
                 }
             }
         }
-        // 默认返回无 BOM，可能需要根据文件内容进一步检测
+        // Return default message if no BOM is detected
         return "Unknown or no BOM detected";
     }
+
 
     public static void main(String[] args) {
 
@@ -50,16 +56,19 @@ public class BOMDetector {
 
         File file = new File(filePath);
 
+        // Check if the file exists
         if (!file.exists()) {
-            System.out.println("文件不存在: " + filePath);
+            System.out.println("File does not exist: " + filePath);
             return;
         }
 
         try {
+            // Detect the file's encoding and print the result
             String encoding = detectFileEncoding(file);
-            System.out.println("检测到的文件编码: " + encoding);
+            System.out.println("Detected file encoding: " + encoding);
         } catch (IOException e) {
-            System.out.println("读取文件时发生错误: " + e.getMessage());
+            // Handle errors during file reading
+            System.out.println("Error reading the file: " + e.getMessage());
         }
     }
 }
