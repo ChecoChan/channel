@@ -1,3 +1,64 @@
-test
-test
-test
+import com.google.common.cache.*;
+
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+
+public class LocalCacheUtil<K, V> {
+
+    private final LoadingCache<K, V> cache;
+
+    /**
+     * 构造函数
+     * @param maxSize 最大缓存数量
+     * @param expireAfterWriteSec 写入后多少秒过期
+     * @param valueLoader 加载新值的函数（可为 null，如果为 null，则 get 时必须用 put 预置好值）
+     */
+    public LocalCacheUtil(long maxSize, long expireAfterWriteSec, Function<K, V> valueLoader) {
+        CacheLoader<K, V> loader = valueLoader != null
+            ? CacheLoader.from(valueLoader::apply)
+            : new CacheLoader<>() {
+                @Override
+                public V load(K key) {
+                    throw new UnsupportedOperationException("没有提供 valueLoader，必须先 put 才能 get");
+                }
+            };
+
+        this.cache = CacheBuilder.newBuilder()
+            .maximumSize(maxSize)
+            .expireAfterWrite(expireAfterWriteSec, TimeUnit.SECONDS)
+            .build(loader);
+    }
+
+    /**
+     * 获取缓存中的值
+     */
+    public V get(K key) {
+        try {
+            return cache.get(key);
+        } catch (ExecutionException e) {
+            throw new RuntimeException("获取缓存失败", e);
+        }
+    }
+
+    /**
+     * 手动设置值
+     */
+    public void put(K key, V value) {
+        cache.put(key, value);
+    }
+
+    /**
+     * 移除某个 key
+     */
+    public void invalidate(K key) {
+        cache.invalidate(key);
+    }
+
+    /**
+     * 清除所有缓存
+     */
+    public void invalidateAll() {
+        cache.invalidateAll();
+    }
+}
