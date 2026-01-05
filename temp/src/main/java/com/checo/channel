@@ -1,0 +1,229 @@
+import javax.xml.stream.*;
+import javax.xml.stream.events.XMLEvent;
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class Pain008Splitter {
+
+    /**
+     * 主方法：从 S3 InputStream 解析 PAIN.008 文件，
+     * 按单个 DrctDbtTxInf 切分成 List<String>
+     */
+    public static List<String> splitPain008ByTransaction(InputStream s3InputStream)
+            throws XMLStreamException {
+
+        List<String> result = new ArrayList<>();
+
+        XMLInputFactory factory = XMLInputFactory.newInstance();
+        XMLStreamReader reader = factory.createXMLStreamReader(s3InputStream);
+
+        String grpHdrXml = null;
+        String currentPmtInfHeaderXml = null;
+
+        while (reader.hasNext()) {
+            int event = reader.next();
+
+            switch (event) {
+
+                case XMLStreamConstants.START_ELEMENT:
+                    switch (reader.getLocalName()) {
+
+                        case "GrpHdr":
+                            grpHdrXml = readElement(reader, "GrpHdr");
+                            break;
+
+                        case "PmtInf":
+                            currentPmtInfHeaderXml = readPmtInfHeader(reader);
+                            break;
+
+                        case "DrctDbtTxInf":
+                            String txXml = readSingleDrctDbtTxInf(reader);
+                            String fullXml = buildFullTransactionXml(
+                                    grpHdrXml,
+                                    currentPmtInfHeaderXml,
+                                    txXml
+                            );
+                            result.add(fullXml);
+                            break;
+
+                        default:
+                            break;
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        reader.close();
+        return result;
+    }
+
+    /**
+     * 读取 GrpHdr 或任意简单元素的完整 XML
+     */
+    private static String readElement(XMLStreamReader reader, String rootName)
+            throws XMLStreamException {
+
+        StringWriter sw = new StringWriter();
+        XMLStreamWriter writer = XMLOutputFactory.newInstance().createXMLStreamWriter(sw);
+
+        writer.writeStartElement(rootName);
+        writeAttributes(reader, writer);
+
+        int depth = 1;
+
+        while (reader.hasNext() && depth > 0) {
+            int event = reader.next();
+
+            switch (event) {
+                case XMLStreamConstants.START_ELEMENT:
+                    depth++;
+                    writer.writeStartElement(reader.getLocalName());
+                    writeAttributes(reader, writer);
+                    break;
+
+                case XMLStreamConstants.CHARACTERS:
+                    if (!reader.isWhiteSpace()) {
+                        writer.writeCharacters(reader.getText());
+                    }
+                    break;
+
+                case XMLStreamConstants.END_ELEMENT:
+                    writer.writeEndElement();
+                    depth--;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        writer.close();
+        return sw.toString();
+    }
+
+    /**
+     * 读取 PmtInf Header（不触碰 DrctDbtTxInf）
+     */
+    private static String readPmtInfHeader(XMLStreamReader reader)
+            throws XMLStreamException {
+
+        StringWriter sw = new StringWriter();
+        XMLStreamWriter writer = XMLOutputFactory.newInstance().createXMLStreamWriter(sw);
+
+        // reader 已在 <PmtInf> START_ELEMENT
+        writer.writeStartElement("PmtInf");
+        writeAttributes(reader, writer);
+
+        int depth = 1;
+
+        while (reader.hasNext() && depth > 0) {
+            int event = reader.next();
+
+            switch (event) {
+
+                case XMLStreamConstants.START_ELEMENT:
+                    // 遇到 DrctDbtTxInf 时立即返回 header
+                    if ("DrctDbtTxInf".equals(reader.getLocalName())) {
+                        writer.close();
+                        return sw.toString();
+                    }
+                    depth++;
+                    writer.writeStartElement(reader.getLocalName());
+                    writeAttributes(reader, writer);
+                    break;
+
+                case XMLStreamConstants.CHARACTERS:
+                    if (!reader.isWhiteSpace()) {
+                        writer.writeCharacters(reader.getText());
+                    }
+                    break;
+
+                case XMLStreamConstants.END_ELEMENT:
+                    depth--;
+                    writer.writeEndElement();
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        writer.close();
+        return sw.toString();
+    }
+
+    /**
+     * 读取单个 DrctDbtTxInf
+     */
+    private static String readSingleDrctDbtTxInf(XMLStreamReader reader)
+            throws XMLStreamException {
+
+        StringWriter sw = new StringWriter();
+        XMLStreamWriter writer = XMLOutputFactory.newInstance().createXMLStreamWriter(sw);
+
+        writer.writeStartElement("DrctDbtTxInf");
+        writeAttributes(reader, writer);
+
+        int depth = 1;
+
+        while (reader.hasNext() && depth > 0) {
+            int event = reader.next();
+
+            switch (event) {
+
+                case XMLStreamConstants.START_ELEMENT:
+                    depth++;
+                    writer.writeStartElement(reader.getLocalName());
+                    writeAttributes(reader, writer);
+                    break;
+
+                case XMLStreamConstants.CHARACTERS:
+                    if (!reader.isWhiteSpace()) writer.writeCharacters(reader.getText());
+                    break;
+
+                case XMLStreamConstants.END_ELEMENT:
+                    depth--;
+                    writer.writeEndElement();
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        writer.close();
+        return sw.toString();
+    }
+
+    /**
+     * 构建完整 PAIN.008 transaction XML
+     */
+    private static String buildFullTransactionXml(String grpHdrXml,
+                                                   String pmtInfHeaderXml,
+                                                   String txXml) {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                "<CstmrDrctDbtInitn>\n" +
+                grpHdrXml + "\n" +
+                pmtInfHeaderXml + "\n" +
+                txXml + "\n" +
+                "</PmtInf>\n" +
+                "</CstmrDrctDbtInitn>";
+    }
+
+    /**
+     * 辅助方法：写属性
+     */
+    private static void writeAttributes(XMLStreamReader reader, XMLStreamWriter writer)
+            throws XMLStreamException {
+        for (int i = 0; i < reader.getAttributeCount(); i++) {
+            writer.writeAttribute(
+                    reader.getAttributeLocalName(i),
+                    reader.getAttributeValue(i)
+            );
+        }
+    }
+}
