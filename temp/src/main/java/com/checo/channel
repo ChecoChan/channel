@@ -7,14 +7,13 @@ import java.util.List;
 
 public class Pain008Splitter {
 
-    /* =========================
-     * 对外主入口
-     * ========================= */
+    /**
+     * 主方法：按单个 DrctDbtTxInf 交易拆分 pain.008 文件
+     */
     public static List<String> splitPain008(InputStream in)
             throws XMLStreamException {
 
         List<String> result = new ArrayList<>();
-
         XMLInputFactory factory = XMLInputFactory.newInstance();
         XMLEventReader reader = factory.createXMLEventReader(in);
 
@@ -23,8 +22,12 @@ public class Pain008Splitter {
         String cstmrStart = null;
         String cstmrEnd = null;
         String grpHdrXml = null;
+        String pmtInfHeaderXml = null;
 
-        PmtInfContext pmtInfCtx = null;
+        // PmtInf 尾部 EndElement 缓存
+        EndElement pmtInfEndElement = null;
+        EndElement cstmrEndElement = null;
+        EndElement documentEndElement = null;
 
         while (reader.hasNext()) {
             XMLEvent e = reader.nextEvent();
@@ -33,65 +36,58 @@ public class Pain008Splitter {
                 continue;
             }
 
-            String localName =
-                    e.asStartElement()
-                     .getName()
-                     .getLocalPart();
+            String localName = e.asStartElement().getName().getLocalPart();
 
             switch (localName) {
 
                 case "Document":
                     documentStart = writeSingleEvent(e);
-                    documentEnd = null; // 稍后从流里读
                     break;
 
                 case "CstmrDrctDbtInitn":
                     cstmrStart = writeSingleEvent(e);
-                    cstmrEnd = null;
                     break;
 
                 case "GrpHdr":
-                    grpHdrXml =
-                        readExactElement(reader, e.asStartElement());
+                    grpHdrXml = readExactElement(reader, e.asStartElement());
                     break;
 
                 case "PmtInf":
-                    pmtInfCtx =
-                        readPmtInfHeader(reader, e.asStartElement());
+                    PmtInfContext pmtInfCtx =
+                            readPmtInfHeader(reader, e.asStartElement());
+                    pmtInfHeaderXml = pmtInfCtx.headerXml;
                     break;
 
                 case "DrctDbtTxInf":
-                    if (pmtInfCtx == null) {
-                        throw new IllegalStateException(
-                            "DrctDbtTxInf appears before PmtInf");
+                    // 每次循环只读取一个交易
+                    String txXml = readExactElement(reader, e.asStartElement());
+
+                    // 获取 PmtInf 的尾部（</PmtInf>）但不消费后续交易
+                    if (pmtInfEndElement == null) {
+                        pmtInfEndElement = findEndElement(reader, "PmtInf");
                     }
 
-                    String txXml =
-                        readExactElement(reader, e.asStartElement());
+                    // 获取 CstmrDrctDbtInitn 尾部（</CstmrDrctDbtInitn>）
+                    if (cstmrEndElement == null) {
+                        cstmrEndElement = findEndElement(reader, "CstmrDrctDbtInitn");
+                    }
 
-                    String pmtInfEndXml =
-                        readUntilEnd(reader, "PmtInf");
+                    // 获取 Document 尾部
+                    if (documentEndElement == null) {
+                        documentEndElement = findEndElement(reader, "Document");
+                    }
 
-                    String cstmrEndXml =
-                        readUntilEnd(reader, "CstmrDrctDbtInitn");
-
-                    String documentEndXml =
-                        readUntilEnd(reader, "Document");
-
-                    String fullXml =
-                        documentStart +
-                        cstmrStart +
-                        grpHdrXml +
-                        pmtInfCtx.headerXml +
-                        txXml +
-                        pmtInfEndXml +
-                        cstmrEndXml +
-                        documentEndXml;
+                    // 拼接完整 XML
+                    String fullXml = documentStart +
+                            cstmrStart +
+                            grpHdrXml +
+                            pmtInfHeaderXml +
+                            txXml +
+                            pmtInfEndElement.toString() +
+                            cstmrEndElement.toString() +
+                            documentEndElement.toString();
 
                     result.add(fullXml);
-
-                    // 重置，只保留 header 供下一个 tx 用
-                    pmtInfCtx.resetForNextTx();
                     break;
             }
         }
@@ -100,74 +96,49 @@ public class Pain008Splitter {
         return result;
     }
 
-    /* =========================
-     * PmtInf 上下文
-     * ========================= */
+    /** PmtInf header 上下文 */
     private static class PmtInfContext {
         final String headerXml;
 
         PmtInfContext(String headerXml) {
             this.headerXml = headerXml;
         }
-
-        void resetForNextTx() {
-            // 目前不需要状态清理，占位，便于以后扩展
-        }
     }
 
-    /* =========================
-     * 工具方法
-     * ========================= */
-
-    /** 写单个 start event（不 hardcode） */
+    /** 写单个 start event 为字符串 */
     private static String writeSingleEvent(XMLEvent e)
             throws XMLStreamException {
-
         StringWriter sw = new StringWriter();
         XMLEventWriter writer =
-            XMLOutputFactory.newInstance()
-                            .createXMLEventWriter(sw);
+                XMLOutputFactory.newInstance().createXMLEventWriter(sw);
         writer.add(e);
         writer.close();
         return sw.toString();
     }
 
-    /** 精确读取一个完整元素（start 已被消费） */
+    /** 精确读取完整元素（start 已消费） */
     private static String readExactElement(
             XMLEventReader reader,
             StartElement start) throws XMLStreamException {
 
-        String target =
-            start.getName().getLocalPart();
-
+        String target = start.getName().getLocalPart();
         StringWriter sw = new StringWriter();
         XMLEventWriter writer =
-            XMLOutputFactory.newInstance()
-                            .createXMLEventWriter(sw);
+                XMLOutputFactory.newInstance().createXMLEventWriter(sw);
 
         writer.add(start);
 
         int depth = 1;
-
-        while (reader.hasNext()) {
+        while (reader.hasNext() && depth > 0) {
             XMLEvent e = reader.nextEvent();
             writer.add(e);
 
             if (e.isStartElement()
-                && target.equals(
-                    e.asStartElement()
-                     .getName()
-                     .getLocalPart())) {
+                    && target.equals(e.asStartElement().getName().getLocalPart())) {
                 depth++;
-            }
-
-            if (e.isEndElement()
-                && target.equals(
-                    e.asEndElement()
-                     .getName()
-                     .getLocalPart())) {
+            } else if (e.isEndElement()
+                    && target.equals(e.asEndElement().getName().getLocalPart())) {
                 depth--;
-                if (depth == 0) break;
             }
         }
 
@@ -175,33 +146,29 @@ public class Pain008Splitter {
         return sw.toString();
     }
 
-    /** 读取 PmtInf 的 header（直到第一个 DrctDbtTxInf 之前） */
+    /** 读取 PmtInf header（直到遇到第一个 DrctDbtTxInf） */
     private static PmtInfContext readPmtInfHeader(
             XMLEventReader reader,
-            StartElement pmtInfStart)
-            throws XMLStreamException {
+            StartElement pmtInfStart) throws XMLStreamException {
 
         StringWriter sw = new StringWriter();
         XMLEventWriter writer =
-            XMLOutputFactory.newInstance()
-                            .createXMLEventWriter(sw);
+                XMLOutputFactory.newInstance().createXMLEventWriter(sw);
 
         writer.add(pmtInfStart);
 
         while (reader.hasNext()) {
             XMLEvent next = reader.peek();
 
-            if (next.isCharacters()
-                && next.asCharacters().isWhiteSpace()) {
+            // 跳过空白
+            if (next.isCharacters() && next.asCharacters().isWhiteSpace()) {
                 writer.add(reader.nextEvent());
                 continue;
             }
 
+            // 碰到第一个交易，header 结束
             if (next.isStartElement()
-                && "DrctDbtTxInf".equals(
-                    next.asStartElement()
-                        .getName()
-                        .getLocalPart())) {
+                    && "DrctDbtTxInf".equals(next.asStartElement().getName().getLocalPart())) {
                 break;
             }
 
@@ -212,31 +179,35 @@ public class Pain008Splitter {
         return new PmtInfContext(sw.toString());
     }
 
-    /** 从当前位置一直读到指定 EndElement（包含） */
-    private static String readUntilEnd(
+    /** 查找 EndElement（不消费中间其他元素，只消费目标 EndElement） */
+    private static EndElement findEndElement(
             XMLEventReader reader,
-            String elementName)
-            throws XMLStreamException {
+            String elementName) throws XMLStreamException {
 
-        StringWriter sw = new StringWriter();
-        XMLEventWriter writer =
-            XMLOutputFactory.newInstance()
-                            .createXMLEventWriter(sw);
+        int depth = 0;
 
         while (reader.hasNext()) {
-            XMLEvent e = reader.nextEvent();
-            writer.add(e);
+            XMLEvent e = reader.peek();
+
+            if (e.isStartElement()
+                    && elementName.equals(e.asStartElement().getName().getLocalPart())) {
+                depth++;
+            }
 
             if (e.isEndElement()
-                && elementName.equals(
-                    e.asEndElement()
-                     .getName()
-                     .getLocalPart())) {
-                break;
+                    && elementName.equals(e.asEndElement().getName().getLocalPart())) {
+                if (depth == 0) {
+                    // 找到正确的 EndElement，不消费 peek
+                    return e.asEndElement();
+                } else {
+                    depth--;
+                }
             }
+
+            reader.nextEvent(); // 消费其他事件
         }
 
-        writer.close();
-        return sw.toString();
+        throw new XMLStreamException(
+                "End element </" + elementName + "> not found");
     }
 }
