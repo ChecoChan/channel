@@ -1,3 +1,4 @@
+import javax.xml.namespace.QName;
 import javax.xml.stream.*;
 import javax.xml.stream.events.*;
 import java.io.InputStream;
@@ -5,10 +6,16 @@ import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Pain.008 按单个 DrctDbtTxInf 交易拆分工具
+ */
 public class Pain008Splitter {
 
     /**
-     * 将输入的 Pain.008 文件按单个 DrctDbtTxInf 拆分成多个完整 XML
+     * 将输入 Pain.008 文件按单个交易拆分
+     *
+     * @param in S3 InputStream
+     * @return List，每个元素是完整 XML
      */
     public static List<String> splitPain008(InputStream in) throws XMLStreamException {
         List<String> result = new ArrayList<>();
@@ -16,12 +23,12 @@ public class Pain008Splitter {
         XMLEventReader reader = factory.createXMLEventReader(in);
 
         String documentStart = null;
+        String documentEnd = null;
         String cstmrStart = null;
+        String cstmrEnd = null;
         String grpHdrXml = null;
         String pmtInfHeaderXml = null;
-
-        EndElement cstmrEndElement = null;
-        EndElement documentEndElement = null;
+        EndElement pmtInfEndElement = null;
 
         while (reader.hasNext()) {
             XMLEvent e = reader.nextEvent();
@@ -34,10 +41,12 @@ public class Pain008Splitter {
 
                 case "Document":
                     documentStart = writeSingleEvent(e);
+                    documentEnd = findEndElement(reader, "Document").toString();
                     break;
 
                 case "CstmrDrctDbtInitn":
                     cstmrStart = writeSingleEvent(e);
+                    cstmrEnd = findEndElement(reader, "CstmrDrctDbtInitn").toString();
                     break;
 
                 case "GrpHdr":
@@ -45,35 +54,27 @@ public class Pain008Splitter {
                     break;
 
                 case "PmtInf":
-                    // 读取 PmtInf header（直到第一个 DrctDbtTxInf）
-                    pmtInfHeaderXml = readPmtInfHeader(reader, e.asStartElement());
+                    PmtInfContext pmtInfCtx = readPmtInfHeader(reader, e.asStartElement());
+                    pmtInfHeaderXml = pmtInfCtx.headerXml;
+                    pmtInfEndElement = pmtInfCtx.pmtInfEndElement;
                     break;
 
                 case "DrctDbtTxInf":
-                    // 读取当前交易
+                    // 每个交易
                     String txXml = readExactElement(reader, e.asStartElement());
 
                     // 拼接完整 XML
-                    // 注意：尾部元素在此不消费，延后在整个流结束时处理
-                    if (cstmrEndElement == null) {
-                        cstmrEndElement = findEndElement(reader, "CstmrDrctDbtInitn");
-                    }
-                    if (documentEndElement == null) {
-                        documentEndElement = findEndElement(reader, "Document");
-                    }
-
                     String fullXml = documentStart +
                             cstmrStart +
                             grpHdrXml +
+                            "<PmtInf>" + // 用 header 包裹交易
                             pmtInfHeaderXml +
                             txXml +
-                            "</PmtInf>" + // 这里直接用结束标签的字符串形式
-                            cstmrEndElement.toString() +
-                            documentEndElement.toString();
+                            pmtInfEndElement.toString() +
+                            cstmrEnd +
+                            documentEnd;
 
                     result.add(fullXml);
-
-                    // 下一个交易仍然使用同一个 header
                     break;
             }
         }
@@ -82,20 +83,16 @@ public class Pain008Splitter {
         return result;
     }
 
-    /**
-     * PmtInf header 上下文（用于重复使用）
-     */
     private static class PmtInfContext {
         final String headerXml;
+        final EndElement pmtInfEndElement;
 
-        PmtInfContext(String headerXml) {
+        PmtInfContext(String headerXml, EndElement pmtInfEndElement) {
             this.headerXml = headerXml;
+            this.pmtInfEndElement = pmtInfEndElement;
         }
     }
 
-    /**
-     * 写单个 start event 为字符串
-     */
     private static String writeSingleEvent(XMLEvent e) throws XMLStreamException {
         StringWriter sw = new StringWriter();
         XMLEventWriter writer = XMLOutputFactory.newInstance().createXMLEventWriter(sw);
@@ -104,9 +101,6 @@ public class Pain008Splitter {
         return sw.toString();
     }
 
-    /**
-     * 精确读取完整元素（start 已消费）
-     */
     private static String readExactElement(XMLEventReader reader, StartElement start) throws XMLStreamException {
         String target = start.getName().getLocalPart();
         StringWriter sw = new StringWriter();
@@ -130,10 +124,7 @@ public class Pain008Splitter {
         return sw.toString();
     }
 
-    /**
-     * 读取 PmtInf header（直到第一个 DrctDbtTxInf）
-     */
-    private static String readPmtInfHeader(XMLEventReader reader, StartElement pmtInfStart) throws XMLStreamException {
+    private static PmtInfContext readPmtInfHeader(XMLEventReader reader, StartElement pmtInfStart) throws XMLStreamException {
         StringWriter sw = new StringWriter();
         XMLEventWriter writer = XMLOutputFactory.newInstance().createXMLEventWriter(sw);
 
@@ -154,13 +145,13 @@ public class Pain008Splitter {
             writer.add(reader.nextEvent());
         }
 
+        // 不消费 PmtInf 尾部，在这里查找一次，供所有交易使用
+        EndElement pmtInfEndElement = findEndElement(reader, "PmtInf");
+
         writer.close();
-        return sw.toString();
+        return new PmtInfContext(sw.toString(), pmtInfEndElement);
     }
 
-    /**
-     * 找到指定 EndElement，不消费其他元素
-     */
     private static EndElement findEndElement(XMLEventReader reader, String elementName) throws XMLStreamException {
         int depth = 0;
         while (reader.hasNext()) {
@@ -172,14 +163,13 @@ public class Pain008Splitter {
 
             if (e.isEndElement() && elementName.equals(e.asEndElement().getName().getLocalPart())) {
                 if (depth == 0) {
-                    // 返回 EndElement，不消费
-                    return e.asEndElement();
+                    return e.asEndElement(); // 不消费，直接返回
                 } else {
                     depth--;
                 }
             }
 
-            reader.nextEvent(); // 消费事件
+            reader.nextEvent(); // 消费
         }
         throw new XMLStreamException("End element </" + elementName + "> not found");
     }
